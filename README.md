@@ -5,7 +5,7 @@ Local **Streamlit** UI for read-only SQL against the PagerDuty Data Lake (Redshi
 ## Features
 
 - **Data Lake (home page)**: type a **question** → **Claude** generates SQL → the app runs it on **local Redshift** (tunnel) and shows a **table**. Use experimental **`claude` CLI** (`claude -p`) instead of the API when you prefer no API key in the app.
-- **Sales Signal Wiki** (sidebar page): browse [gong-wiki](https://github.com/PagerDuty/gong-wiki)-style `wiki/sources/*.md` by **user-chosen start/end dates**, then ask Claude **grounded** questions over a sample of those calls (verbatim excerpts + citations). Point **`GONG_WIKI_PATH`** at your wiki root (folder that contains `sources/`) or keep a `wiki/` next to this app / clone `gong-wiki` alongside and run `./setup.sh` there.
+- **Sales Signal Wiki** (sidebar page): (1) **Local** — browse [gong-wiki](https://github.com/PagerDuty/gong-wiki)-style `wiki/sources/*.md` by **start/end dates** (optional **`GONG_WIKI_PATH`**). (2) **Data Lake** — same Redshift session as the home page: materialize calls from **`gong_io__call`** + transcript text from **`gong_io__call_transcript`** into **`wiki_generated/`** (gitignored) with `index.md`, `log.md`, and per-call `sources/{call_id}.md`, following the [“LLM Wiki”](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) idea of a persistent compiled layer on top of raw data. Then ask Claude over the filtered range (citations to `call_id`).
 - **Manual SQL**: advanced expander to paste SQL and run without the LLM.
 - **Session memory**: sidebar history (SQL + preview, **Load SQL**).
 - **Safety**: read-only SQL validation; `statement_timeout` 120s.
