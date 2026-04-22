@@ -1,4 +1,4 @@
-"""Sales Signal Wiki — browse Gong wiki sources by date range and ask grounded questions."""
+"""Sales Signal Wiki — local gong-wiki markdown or materialize from Redshift Gong tables."""
 
 from __future__ import annotations
 
@@ -18,6 +18,18 @@ import shutil
 import pandas as pd
 import streamlit as st
 
+from db import (
+    bootstrap_redshift_env_from_1password_and_aws,
+    connect_datalake,
+    default_datalake_schema,
+    env_ready,
+)
+from gong_datalake_ingest import (
+    default_generated_wiki_dir,
+    fetch_calls_for_range,
+    fetch_transcripts_for_calls,
+    materialize_wiki_tree,
+)
 from gong_wiki_sources import WikiSourceMeta, filter_by_date_range, iter_source_metas, resolve_wiki_root
 from llm_keys import resolve_llm_keys
 from nl_sql import default_llm_provider
@@ -80,52 +92,130 @@ st.set_page_config(
 
 st.title("Sales Signal Wiki (Gong)")
 st.caption(
-    "Browse **local** wiki source summaries from the [gong-wiki](https://github.com/PagerDuty/gong-wiki) layout "
-    "(`wiki/sources/*.md`). Run **`./setup.sh`** in `gong-wiki` first, or set **`GONG_WIKI_PATH`** to your `wiki` folder."
+    "**Local wiki:** markdown from [gong-wiki](https://github.com/PagerDuty/gong-wiki) (`wiki/sources/`). "
+    "**Data Lake:** read-only SQL on `gong_io__call` + `gong_io__call_transcript` → materialize "
+    "[Karpathy-style](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) "
+    "persistent markdown under `wiki_generated/` (`index.md`, `log.md`, `sources/`)."
 )
 
 today = date.today()
 default_end = today
 default_start = today - timedelta(days=90)
 
-col_a, col_b, col_c = st.columns([1, 1, 2])
+col_a, col_b = st.columns(2)
 with col_a:
     start_d = st.date_input("Start date", value=default_start, max_value=today)
 with col_b:
     end_d = st.date_input("End date", value=default_end, max_value=today)
 
-wiki_path_input = st.text_input(
-    "Wiki root (optional)",
-    value=os.environ.get("GONG_WIKI_PATH", "").strip(),
-    placeholder="Leave empty to auto-detect: ./wiki or ../gong-wiki/wiki",
-    help="Directory that contains a `sources` subfolder (same as gong-wiki after setup.sh).",
+source_mode = st.radio(
+    "Source",
+    ["Local markdown wiki", "Materialize from Data Lake (Redshift)"],
+    horizontal=True,
+    key="gong_wiki_source_mode",
 )
 
-wiki_root = resolve_wiki_root(wiki_path_input or None)
-if wiki_root is None:
-    st.warning(
-        "No wiki found. Clone **gong-wiki**, run **`./setup.sh`** (AWS profile **prod**), "
-        "or set **`GONG_WIKI_PATH`** to the directory containing **`sources`**."
-    )
-    st.stop()
+wiki_root: Path | None = None
+wiki_path_input = ""
 
-c_wiki, c_refresh = st.columns([4, 1])
-with c_wiki:
-    st.success(f"Using wiki: `{wiki_root}`")
-with c_refresh:
-    if st.button("Refresh index", help="Clear scan cache after syncing new files from S3"):
+if source_mode.startswith("Local"):
+    wiki_path_input = st.text_input(
+        "Wiki root (optional)",
+        value=os.environ.get("GONG_WIKI_PATH", "").strip(),
+        placeholder="Leave empty to auto-detect: ./wiki or ../gong-wiki/wiki",
+        help="Directory that contains a `sources` subfolder.",
+    )
+    wiki_root = resolve_wiki_root(wiki_path_input or None)
+    if wiki_root is None:
+        st.warning(
+            "No wiki found. Clone **gong-wiki**, run **`./setup.sh`**, or set **`GONG_WIKI_PATH`**, "
+            "or switch to **Data Lake** to build `wiki_generated/` from Redshift."
+        )
+        st.stop()
+
+    c_wiki, c_refresh = st.columns([4, 1])
+    with c_wiki:
+        st.success(f"Using wiki: `{wiki_root}`")
+    with c_refresh:
+        if st.button("Refresh index", help="Clear scan cache after syncing new files from S3"):
+            _cached_all_meta_rows.clear()
+            st.rerun()
+
+else:
+    gen_root = default_generated_wiki_dir()
+    st.info(
+        f"Writes **`{gen_root}`** (`sources/*.md`, `index.md`, `log.md`). Folder is gitignored. "
+        "Uses **`partition_date`** and **`call_date`** on `gong_io__call` per query-datalake SKILL."
+    )
+
+    ready, missing = env_ready()
+    if not ready:
+        with st.spinner("Loading Redshift environment (1Password + AWS)…"):
+            _, boot_err = bootstrap_redshift_env_from_1password_and_aws()
+        ready, missing = env_ready()
+        if not ready:
+            st.error(
+                "**Redshift not configured.** "
+                + (f"{boot_err}\n\n" if boot_err else "")
+                + f"Missing: **{', '.join(missing)}**."
+            )
+            st.stop()
+
+    sch = default_datalake_schema()
+    st.caption(f"Schema: **`{sch}`**")
+
+    max_calls = st.slider("Max calls to load", 5, 200, 40, help="Newest calls in range first.")
+    max_tr_rows = st.slider("Max transcript rows (total)", 5_000, 200_000, 50_000, step=5_000)
+
+    if st.button("Materialize wiki from Data Lake", type="primary"):
+        try:
+            with st.spinner("Querying Gong tables…"):
+                conn = connect_datalake()
+                try:
+                    calls_df = fetch_calls_for_range(
+                        conn, sch, start_d, end_d, max_calls=max_calls
+                    )
+                    if calls_df.empty:
+                        st.warning("No rows returned for this date range and limits.")
+                    else:
+                        ids = [str(x).strip() for x in calls_df["call_id"].tolist()]
+                        transcripts = fetch_transcripts_for_calls(
+                            conn, sch, ids, max_total_rows=max_tr_rows
+                        )
+                        materialize_wiki_tree(gen_root, calls_df, transcripts)
+                        _cached_all_meta_rows.clear()
+                        st.success(
+                            f"Wrote **{len(calls_df)}** source page(s) under `{gen_root / 'sources'}`."
+                        )
+                        st.rerun()
+                finally:
+                    conn.close()
+        except Exception as e:
+            st.error(f"{type(e).__name__}: {e}")
+            st.stop()
+
+    wiki_root = gen_root
+    if not (wiki_root / "sources").is_dir() or not any(wiki_root.glob("sources/*.md")):
+        st.warning("Click **Materialize wiki from Data Lake** to create sources, then browse and ask below.")
+        st.stop()
+
+    if st.button("Clear generated wiki cache (filesystem scan)"):
         _cached_all_meta_rows.clear()
         st.rerun()
 
+# --- shared: index metas, filter by date, table + ask ---
+
+assert wiki_root is not None
 all_metas = [_row_to_meta(r) for r in _cached_all_meta_rows(str(wiki_root.resolve()))]
 in_range = filter_by_date_range(all_metas, start_d, end_d)
 
-st.metric("Sources in date range", len(in_range), delta=None, help=f"Calls with frontmatter date between {start_d} and {end_d} (inclusive).")
+st.metric("Sources in date range", len(in_range), help=f"Frontmatter `date` in **{start_d}** … **{end_d}** (inclusive).")
 
 if not in_range:
     st.info(
-        f"No source pages with a parsable **`date`** in **{start_d}** … **{end_d}**. "
-        f"Total indexed sources (any date): **{len(all_metas)}**."
+        f"No sources in **{start_d}** … **{end_d}**. "
+        f"Indexed total: **{len(all_metas)}**. "
+        "For Data Lake mode, materialize again if you changed dates."
     )
     st.stop()
 
@@ -140,12 +230,18 @@ df = pd.DataFrame(
     }
 ).sort_values("date", ascending=False)
 
-st.dataframe(df, use_container_width=True, height=360, hide_index=True)
+st.dataframe(df, use_container_width=True, height=320, hide_index=True)
+
+with st.expander("Open `index.md` preview (generated / local)"):
+    idx = wiki_root / "index.md"
+    if idx.is_file():
+        st.markdown(idx.read_text(encoding="utf-8", errors="replace")[:12_000])
+    else:
+        st.caption("No `index.md` (local gong-wiki may omit it).")
 
 st.subheader("Ask the wiki (filtered range)")
 st.caption(
-    "The model only sees a **sample** of files from your range (to fit context limits). "
-    "Same LLM options as the Data Lake page: **API key** or **`claude`** on PATH."
+    "Claude sees a **sample** of sources (newest first). Same LLM options as the Data Lake home page."
 )
 
 max_for_llm = st.slider(
@@ -153,15 +249,16 @@ max_for_llm = st.slider(
     min_value=1,
     max_value=min(40, len(in_range)),
     value=min(12, len(in_range)),
-    help="Newest calls in range are prioritized.",
+    key="wiki_max_llm",
 )
 
-chars_per = st.slider("Max characters per source excerpt", 1500, 8000, 4500, step=500)
+chars_per = st.slider("Max characters per source excerpt", 1500, 8000, 4500, step=500, key="wiki_chars")
 
 question = st.text_area(
     "Question",
     height=100,
     placeholder='e.g. "What pain points show up most in these calls?"',
+    key="wiki_q",
 )
 
 c1, c2 = st.columns([2, 2])
