@@ -122,14 +122,18 @@ if source_mode.startswith("Local"):
     wiki_path_input = st.text_input(
         "Wiki root (optional)",
         value=os.environ.get("GONG_WIKI_PATH", "").strip(),
-        placeholder="Leave empty to auto-detect: ./wiki or ../gong-wiki/wiki",
-        help="Directory that contains a `sources` subfolder.",
+        placeholder="Empty = auto: ./wiki, ./wiki_generated, or ../gong-wiki/wiki",
+        help="Folder that **contains** `sources/` (not a single .md). You can paste a path to "
+        "`.../sources/7903....md` and it will use the parent wiki root.",
     )
     wiki_root = resolve_wiki_root(wiki_path_input or None)
     if wiki_root is None:
         st.warning(
-            "No wiki found. Clone **gong-wiki**, run **`./setup.sh`**, or set **`GONG_WIKI_PATH`**, "
-            "or switch to **Data Lake** to build `wiki_generated/` from Redshift."
+            "No wiki found. Options: (1) Use **Data Lake** to materialize into **`wiki_generated/`**, "
+            "then switch back to **Local** — **`wiki_generated`** is auto-detected. "
+            "(2) Set **Wiki root** to your wiki folder (parent of `sources/`), e.g. "
+            "`/Users/.../datalake-streamlit/wiki_generated`. (3) Clone **gong-wiki** and run **`./setup.sh`**, or "
+            "set **`GONG_WIKI_PATH`**."
         )
         st.stop()
 

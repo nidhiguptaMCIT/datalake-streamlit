@@ -39,6 +39,8 @@ def default_wiki_roots(app_dir: Path | None = None) -> list[Path]:
     if env:
         roots.append(Path(env).expanduser())
     roots.append(base / "wiki")
+    # Data Lake materialize output (same layout as gong-wiki: wiki_root/sources/*.md)
+    roots.append(base / "wiki_generated")
     roots.append(base.parent / "gong-wiki" / "wiki")
     return roots
 
@@ -51,6 +53,9 @@ def resolve_wiki_root(explicit: str | None, app_dir: Path | None = None) -> Path
             return p.resolve()
         if p.is_dir() and p.name == "sources":
             return p.resolve().parent
+        # Pasted path to a single file: .../wiki_generated/sources/79037....md
+        if p.is_file() and p.suffix.lower() == ".md" and p.parent.name == "sources":
+            return p.parent.parent.resolve()
         return None
 
     for root in default_wiki_roots(app_dir):
