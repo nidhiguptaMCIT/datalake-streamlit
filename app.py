@@ -30,6 +30,7 @@ from db import (
     list_tables_in_schema,
     validate_read_only_sql,
 )
+from llm_keys import resolve_llm_keys
 from nl_sql import default_llm_provider, natural_language_to_sql
 from pipeline_catalog import load_pipeline_skill_tables
 
@@ -113,35 +114,6 @@ def run_query(sql: str) -> tuple[pd.DataFrame | None, str | None]:
         return None, f"{type(e).__name__}: {e}"
     finally:
         conn.close()
-
-
-def _read_streamlit_secrets_anthropic_key() -> str | None:
-    """Read Anthropic API key from secrets.toml only if that file exists.
-
-    Direct ``st.secrets[...]`` access without a secrets file makes Streamlit print
-    red "No secrets files found" errors — so we use ``load_if_toml_exists()`` first.
-    """
-    try:
-        from streamlit.runtime.secrets import secrets_singleton
-    except ImportError:
-        return None
-
-    if not secrets_singleton.load_if_toml_exists():
-        return None
-
-    try:
-        return str(st.secrets["ANTHROPIC_API_KEY"])
-    except Exception:
-        return None
-
-
-def resolve_llm_keys() -> str | None:
-    """Anthropic API key (env + optional secrets.toml)."""
-    a = os.getenv("ANTHROPIC_API_KEY")
-    sa = _read_streamlit_secrets_anthropic_key()
-    if sa:
-        a = a or sa
-    return a
 
 
 def provider_for_ui(choice: str) -> str | None:
