@@ -4,7 +4,8 @@ Local **Streamlit** UI for read-only SQL against the PagerDuty Data Lake (Redshi
 
 ## Features
 
-- **Ask & run**: type a **question** → **Claude** (Anthropic API, same models as Claude Code) generates SQL → the app runs it on **local Redshift** (tunnel) and shows a **table**. Use experimental **`claude` CLI** (`claude -p`) instead of the API when you prefer no API key in the app.
+- **Data Lake (home page)**: type a **question** → **Claude** generates SQL → the app runs it on **local Redshift** (tunnel) and shows a **table**. Use experimental **`claude` CLI** (`claude -p`) instead of the API when you prefer no API key in the app.
+- **Sales Signal Wiki** (sidebar page): browse [gong-wiki](https://github.com/PagerDuty/gong-wiki)-style `wiki/sources/*.md` by **user-chosen start/end dates**, then ask Claude **grounded** questions over a sample of those calls (verbatim excerpts + citations). Point **`GONG_WIKI_PATH`** at your wiki root (folder that contains `sources/`) or keep a `wiki/` next to this app / clone `gong-wiki` alongside and run `./setup.sh` there.
 - **Manual SQL**: advanced expander to paste SQL and run without the LLM.
 - **Session memory**: sidebar history (SQL + preview, **Load SQL**).
 - **Safety**: read-only SQL validation; `statement_timeout` 120s.
